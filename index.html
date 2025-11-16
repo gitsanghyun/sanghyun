@@ -1,0 +1,2001 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>📊 부적합 분석 대시보드 V3.0</title>
+    
+    <script src="https://cdn.tailwindcss.com/"></script>
+    <script crossorigin src="https://unpkg.com/react@16/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@16/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/prop-types@15.7.2/prop-types.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/recharts@1.8.5/umd/Recharts.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        .dashboard-container { min-width: 1000px; max-width: 1600px; margin: 0 auto; padding: 20px; }
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0, 0, 0, 0.6); z-index: 50; display: flex; justify-content: center; align-items: center; backdrop-filter: blur(4px); }
+        .modal-content { background-color: white; border-radius: 1rem; width: 90%; max-width: 1200px; max-height: 90%; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .card-hover { transition: all 0.3s ease; }
+        .card-hover:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,0.15); }
+        
+        @media print {
+            .no-print { display: none !important; }
+            .dashboard-container { min-width: auto; max-width: none; margin: 0; padding: 0; }
+        }
+        
+        .spinner { border: 3px solid #f3f4f6; border-top: 3px solid #3b82f6; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #888; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+        
+        .heatmap-cell { cursor: pointer; transition: all 0.2s; position: relative; }
+        .heatmap-cell:hover { outline: 3px solid #3b82f6; outline-offset: -3px; transform: scale(1.05); z-index: 10; }
+        
+        .heatmap-table { position: relative; }
+        .heatmap-row:hover { background-color: rgba(59, 130, 246, 0.1) !important; }
+        .heatmap-col-hover { background-color: rgba(59, 130, 246, 0.1) !important; }
+        
+        .sticky-header { position: sticky; top: 0; z-index: 20; background: #f9fafb; }
+        .sticky-left { position: sticky; left: 0; z-index: 15; background: #f9fafb; }
+        .sticky-right { position: sticky; right: 0; z-index: 15; background: #f9fafb; }
+        
+        .library-status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .library-loaded { background-color: #10b981; }
+        .library-error { background-color: #ef4444; }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useMemo, useState, useCallback } = React;
+        const { BarChart, LineChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, ComposedChart, Line, Area, AreaChart, ScatterChart, Scatter, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Cell } = window.Recharts;
+
+        // 아이콘
+        const Upload = () => <span style={{fontSize: '1.2em'}}>⬆️</span>;
+        const XCircle = () => <span style={{fontSize: '1.2em'}}>❌</span>;
+        const Search = () => <span style={{fontSize: '1.2em'}}>🔍</span>;
+        const CheckSquare = () => <span style={{fontSize: '1.2em'}}>✅</span>;
+        const Square = () => <span style={{fontSize: '1.2em'}}>⬜</span>;
+        const Beaker = () => <span style={{fontSize: '1.2em'}}>🧪</span>;
+        const Download = () => <span style={{fontSize: '1.2em'}}>⬇️</span>;
+        const Printer = () => <span style={{fontSize: '1.2em'}}>🖨️</span>;
+        const File = () => <span style={{fontSize: '1.2em'}}>📄</span>;
+        const TrendingUp = () => <span style={{fontSize: '1.2em'}}>📈</span>;
+        const Award = () => <span style={{fontSize: '1.2em'}}>🏆</span>;
+
+        const ACCEPT = ".csv,.xlsx,.xls";
+        const palette = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#84cc16","#f97316","#ec4899","#14b8a6","#6d28d9","#be185d","#0ea5e9","#a855f7","#22c55e"];
+
+        const requireExport = (ok, msg = "내보낼 데이터가 없습니다.") => {
+            if (!ok) { alert(msg); return false; }
+            return true;
+        };
+
+        const saveWorkbookAs = (wb, filename) => {
+            try {
+                XLSX.writeFile(wb, filename);
+            } catch (err) {
+                console.error(err);
+                alert("엑셀 저장 중 오류가 발생했습니다.");
+            }
+        };
+
+        const getFirstExisting = (row, keys) => {
+            for (const k of keys) {
+                if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== "") return row[k];
+            }
+            return undefined;
+        };
+
+        const toYYYYMM = (v) => {
+            if (v === undefined || v === null) return "알수없음";
+            const s = String(v).trim();
+            if (/^\d{8}$/.test(s)) {
+                const y = Number(s.slice(0, 4));
+                const mm = Math.max(1, Math.min(12, Number(s.slice(4, 6))));
+                return `${y}-${String(mm).padStart(2, "0")}`;
+            }
+            if (/^\d{6}$/i.test(s)) {
+                const y = Number(s.slice(0, 4));
+                const mm = Number(s.slice(4, 6));
+                if (mm >= 1 && mm <= 12) return `${y}-${String(mm).padStart(2, "0")}`;
+            }
+            const m1 = s.match(/^(\d{4})[^\d]?(\d{1,2})(?:[^\d]\d{1,2})?$/);
+            if (m1) {
+                const y = Number(m1[1]);
+                const mm = Math.max(1, Math.min(12, Number(m1[2])));
+                return `${y}-${String(mm).padStart(2, "0")}`;
+            }
+            if (/^\d{4,6}$/.test(s)) {
+                const num = Number(s);
+                if (num >= 20000 && num <= 60000) {
+                    const base = new Date(1899, 11, 30);
+                    const d = new Date(base.getTime() + num * 86400000);
+                    const y = d.getFullYear();
+                    const m = String(d.getMonth() + 1).padStart(2, "0");
+                    return `${y}-${m}`;
+                }
+            }
+            const m2 = s.match(/(19|20|21)\d{2}[^\d]?(\d{1,2})/);
+            if (m2) {
+                const y = Number(m2[0].slice(0, 4));
+                const mm = Math.max(1, Math.min(12, Number(m2[2])));
+                return `${y}-${String(mm).padStart(2, "0")}`;
+            }
+            return "알수없음";
+        };
+
+        const monthMap = { '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, 'A': 10, 'B': 11, 'C': 12, 'a': 10, 'b': 11, 'c': 12 };
+
+        const serialToProdYYYYMM = (serial) => {
+            if (!serial) return "알수없음";
+            const s = String(serial).trim().toUpperCase();
+            const m = s.match(/(?:^|[^\d])(\d{2})([1-9A-C])(?:[^\d]|$)/);
+            if (!m) return "알수없음";
+            const YY = Number(m[1]);
+            const M_char = m[2];
+            const MM = monthMap[M_char];
+            if (!MM) return "알수없음";
+            const fullY = YY >= 70 ? 1900 + YY : 2000 + YY;
+            return `${fullY}-${String(MM).padStart(2, "0")}`;
+        };
+
+        const ymToParts = (ym) => {
+            if (!ym || ym === "알수없음") return null;
+            const m = ym.match(/^(\d{4})-(\d{2})$/);
+            if (!m) return null;
+            return { y: Number(m[1]), m: Number(m[2]) };
+        };
+
+        const diffMonths = (prodYM, recvYM) => {
+            const p = ymToParts(prodYM);
+            const r = ymToParts(recvYM);
+            if (!p || !r) return null;
+            return (r.y - p.y) * 12 + (r.m - p.m);
+        };
+
+        const monthCompare = (a, b) => a.localeCompare(b);
+
+        const inMonthRange = (v, start, end) => {
+            if (!v || v === "알수없음") return false;
+            const filterStart = start && start.length === 7 ? start : undefined;
+            const filterEnd = end && end.length === 7 ? end : undefined;
+            if (filterStart && monthCompare(v, filterStart) < 0) return false;
+            if (filterEnd && monthCompare(v, filterEnd) > 0) return false;
+            return true;
+        };
+
+        const getHeatColor = (value, max, colorScheme) => {
+            if (value === 0) return '#f3f4f6';
+            const ratio = value / max;
+            if (colorScheme === 'blue') {
+                const intensity = Math.floor(ratio * 200 + 55);
+                return `rgb(${255 - intensity}, ${255 - intensity}, 255)`;
+            } else if (colorScheme === 'red') {
+                const intensity = Math.floor(ratio * 200 + 55);
+                return `rgb(255, ${255 - intensity}, ${255 - intensity})`;
+            } else {
+                const intensity = Math.floor(ratio * 200 + 55);
+                return `rgb(${255 - intensity}, 255, ${255 - intensity})`;
+            }
+        };
+
+        const DEFAULT_COL_ORDER = ["구분","분류","상품코드","모델","모델명","시리얼","접수일자","완료일자","접수내용","원인","조치","사용자재","메모여부","생산년월","접수월","생산월","고객명","연락처"];
+
+        const orderColumns = (keys) => {
+            const set = new Set(keys);
+            const ordered = [];
+            DEFAULT_COL_ORDER.forEach((k) => { if (set.has(k)) { ordered.push(k); set.delete(k); } });
+            ordered.push(...[...set.values()].sort());
+            return ordered;
+        };
+
+        const Cards = ({ title, value, icon, color = "blue" }) => (
+            <div className="rounded-2xl border bg-white shadow-md p-5 flex flex-col gap-2 card-hover">
+                <div className="flex items-center justify-between">
+                    <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">{title}</div>
+                    {icon && <span className="text-2xl">{icon}</span>}
+                </div>
+                <div className={`text-3xl font-bold text-${color}-600`}>{String(value)}</div>
+            </div>
+        );
+
+        const CheckboxRow = ({ label, checked, onToggle }) => (
+            <button type="button" onClick={onToggle} className="w-full flex items-center gap-2 py-1.5 px-3 rounded hover:bg-gray-100 text-left transition-colors">
+                {checked ? <CheckSquare /> : <Square />}
+                <span className="text-sm">{label}</span>
+            </button>
+        );
+
+        const DashboardV3 = () => {
+            const [processed, setProcessed] = useState([]);
+            const [error, setError] = useState("");
+            const [isProcessing, setIsProcessing] = useState(false);
+            const [modelQuery, setModelQuery] = useState("");
+            const [defectQuery, setDefectQuery] = useState("");
+            const [modelSel, setModelSel] = useState({});
+            const [defectSel, setDefectSel] = useState({});
+            const [recvStart, setRecvStart] = useState("");
+            const [recvEnd, setRecvEnd] = useState("");
+            const [prodStart, setProdStart] = useState("");
+            const [prodEnd, setProdEnd] = useState("");
+            const [modalOpen, setModalOpen] = useState(false);
+            const [modalRows, setModalRows] = useState([]);
+            const [modalTitle, setModalTitle] = useState("");
+            const [modalSearch, setModalSearch] = useState("");
+            const [modalCols, setModalCols] = useState({});
+            const [showColPicker, setShowColPicker] = useState(false);
+            const [heatmapColorScheme, setHeatmapColorScheme] = useState('blue');
+            const [heatmapSortOrder, setHeatmapSortOrder] = useState('asc');
+            const [hoveredRow, setHoveredRow] = useState(null);
+            const [hoveredCol, setHoveredCol] = useState(null);
+            const [libraryStatus, setLibraryStatus] = useState({
+                React: true,
+                ReactDOM: true,
+                XLSX: typeof XLSX !== 'undefined',
+                Recharts: typeof window.Recharts !== 'undefined',
+                Babel: true,
+                Tailwind: true,
+                PropTypes: typeof PropTypes !== 'undefined'
+            });
+
+            const onFile = async (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                setError("");
+                if (!/\.(csv|xlsx|xls)$/i.test(file.name)) {
+                    setError("CSV/XLS/XLSX 파일만 업로드해주세요.");
+                    return;
+                }
+                setIsProcessing(true);
+                try {
+                    const buf = await file.arrayBuffer();
+                    const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+                    const sheet = wb.Sheets[wb.SheetNames[0]];
+                    const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+                    const rows = json.map((r) => {
+                        const model = String(getFirstExisting(r, ["모델", "모델명", "상품코드", "ProductCode", "Model"]) ?? "알수없음").trim();
+                        const defectType = String(getFirstExisting(r, ["사용자재", "Material", "불량", "불량유형", "원인", "Defect", "Cause"]) ?? "알수없음").trim();
+                        const repairFinish = getFirstExisting(r, ["완료일자", "수리완료일", "CompleteDate"]);
+                        const prodFromCol = getFirstExisting(r, ["생산년월", "ProductionYM", "생산월"]);
+                        const serial = getFirstExisting(r, ["시리얼", "Serial", "S/N"]);
+                        const productionYM = prodFromCol ? toYYYYMM(prodFromCol) : serialToProdYYYYMM(serial);
+                        const receiptCol = getFirstExisting(r, ["접수일자", "접수월", "ReceiptDate", "접수일"]);
+                        const receiptYM = toYYYYMM(receiptCol);
+                        return { model: model || "알수없음", defectType: defectType || "알수없음", productionYM, receiptYM, repairFinish, raw: r };
+                    });
+                    setProcessed(rows);
+                    const mSel = {};
+                    const dSel = {};
+                    rows.forEach((r) => {
+                        if (r.model) mSel[r.model] = true;
+                        if (r.defectType) dSel[r.defectType] = true;
+                    });
+                    setModelSel(mSel);
+                    setDefectSel(dSel);
+                } catch (e) {
+                    console.error(e);
+                    setError("파일 처리 중 오류가 발생했습니다.");
+                } finally {
+                    setIsProcessing(false);
+                }
+            };
+
+            const loadSample = () => {
+                const samples = [
+                    { model: "GP202T", defectType: "히터", productionYM: "2024-05", receiptYM: "2025-09", repairFinish: "2025-09-28", raw: { 모델: "GP202T", 사용자재: "히터", 시리얼: "245XXXXX", 접수일자: "2025-09-27", 완료일자: "2025-09-28" } },
+                    { model: "GP202T", defectType: "바이메탈", productionYM: "2024-06", receiptYM: "2025-09", repairFinish: "2025-09-20", raw: { 모델: "GP202T", 사용자재: "바이메탈", 시리얼: "246XXXXX", 접수일자: "2025-09-19", 완료일자: "2025-09-20" } },
+                    { model: "GP715", defectType: "PCB", productionYM: "2025-01", receiptYM: "2025-03", repairFinish: "2025-03-05", raw: { 모델: "GP715", 사용자재: "PCB", 시리얼: "251XXXXX", 접수일자: "2025-03-02", 완료일자: "" } },
+                    { model: "GP106T", defectType: "케이블", productionYM: "2025-02", receiptYM: "2025-02", repairFinish: "2025-02-15", raw: { 모델: "GP106T", 사용자재: "케이블", 시리얼: "252XXXXX", 접수일자: "2025-02-14", 완료일자: "2025-02-15" } },
+                    { model: "GP202T", defectType: "히터", productionYM: "2024-05", receiptYM: "2025-09", repairFinish: "2025-09-28", raw: { 모델: "GP202T", 사용자재: "히터", 시리얼: "245XXXXX", 접수일자: "2025-09-27", 완료일자: "2025-09-28" } },
+                    { model: "GP202T", defectType: "PCB", productionYM: "2024-12", receiptYM: "2025-07", repairFinish: "", raw: { 모델: "GP202T", 사용자재: "PCB", 시리얼: "24CXXXXX", 접수일자: "2025-07-11", 완료일자: "" } },
+                    { model: "GP715", defectType: "PCB", productionYM: "2025-01", receiptYM: "2025-05", repairFinish: "2025-05-19", raw: { 모델: "GP715", 사용자재: "PCB", 시리얼: "251XXXXX", 접수일자: "2025-05-18", 완료일자: "2025-05-19" } },
+                    { model: "GP715", defectType: "히터", productionYM: "2024-10", receiptYM: "2025-05", repairFinish: "2025-05-21", raw: { 모델: "GP715", 사용자재: "히터", 시리얼: "24AXXXXX", 접수일자: "2025-05-20", 완료일자: "2025-05-21" } },
+                    { model: "GP106T", defectType: "케이블", productionYM: "2025-02", receiptYM: "2025-03", repairFinish: "2025-03-02", raw: { 모델: "GP106T", 사용자재: "케이블", 시리얼: "252XXXXX", 접수일자: "2025-03-01", 완료일자: "2025-03-02" } },
+                    { model: "GP106T", defectType: "PCB", productionYM: "2025-03", receiptYM: "2025-03", repairFinish: "2025-03-12", raw: { 모델: "GP106T", 사용자재: "PCB", 시리얼: "253XXXXX", 접수일자: "2025-03-10", 완료일자: "2025-03-12" } },
+                    { model: "GP202T", defectType: "PCB", productionYM: "2024-11", receiptYM: "2025-08", repairFinish: "2025-08-03", raw: { 모델: "GP202T", 사용자재: "PCB", 시리얼: "24BXXXXX", 접수일자: "2025-08-01", 완료일자: "2025-08-03" } },
+                    { model: "GP202T", defectType: "PCB", productionYM: "2024-11", receiptYM: "2025-08", repairFinish: "2025-08-16", raw: { 모델: "GP202T", 사용자재: "PCB", 시리얼: "24BXXXXX", 접수일자: "2025-08-15", 완료일자: "2025-08-16" } },
+                    { model: "GP202T", defectType: "PCB", productionYM: "2024-12", receiptYM: "2025-08", repairFinish: "", raw: { 모델: "GP202T", 사용자재: "PCB", 시리얼: "24CXXXXX", 접수일자: "2025-08-28", 완료일자: "" } },
+                    { model: "GP715", defectType: "PCB", productionYM: "2025-02", receiptYM: "2025-04", repairFinish: "2025-04-12", raw: { 모델: "GP715", 사용자재: "PCB", 시리얼: "252XXXXX", 접수일자: "2025-04-10", 완료일자: "2025-04-12" } },
+                    { model: "GP715", defectType: "PCB", productionYM: "2025-02", receiptYM: "2025-05", repairFinish: "2025-05-08", raw: { 모델: "GP715", 사용자재: "PCB", 시리얼: "252XXXXX", 접수일자: "2025-05-05", 완료일자: "2025-05-08" } },
+                ];
+                setProcessed(samples);
+                const mSel = {};
+                const dSel = {};
+                samples.forEach((r) => { mSel[r.model] = true; dSel[r.defectType] = true; });
+                setModelSel(mSel);
+                setDefectSel(dSel);
+            };
+
+            const openModal = (title, rows) => {
+                const rawRows = rows.map((r) => r.raw || r);
+                setModalTitle(title);
+                setModalRows(rawRows);
+                const keys = Array.from(new Set(rawRows.flatMap((r) => Object.keys(r))));
+                const ordered = orderColumns(keys);
+                const initSel = {};
+                ordered.forEach((k) => (initSel[k] = true));
+                setModalCols(initSel);
+                setModalSearch("");
+                setShowColPicker(false);
+                setModalOpen(true);
+            };
+
+            const modelOptions = useMemo(() => {
+                const s = new Set();
+                processed.forEach((r) => s.add(r.model || "알수없음"));
+                return [...s].sort();
+            }, [processed]);
+
+            const defectOptions = useMemo(() => {
+                const s = new Set();
+                processed.forEach((r) => s.add(r.defectType || "알수없음"));
+                return [...s].sort();
+            }, [processed]);
+
+            const filtered = useMemo(() => {
+                const mq = modelQuery.toLowerCase();
+                const dq = defectQuery.toLowerCase();
+                const activeModels = new Set(Object.keys(modelSel).filter((k) => modelSel[k]));
+                const activeDef = new Set(Object.keys(defectSel).filter((k) => defectSel[k]));
+                return processed.filter((r) => {
+                    const mPass = activeModels.size ? activeModels.has(r.model) : true;
+                    const dPass = activeDef.size ? activeDef.has(r.defectType) : true;
+                    const mSearch = mq ? String(r.model).toLowerCase().includes(mq) : true;
+                    const dSearch = dq ? String(r.defectType).toLowerCase().includes(dq) : true;
+                    const recvPass = (recvStart || recvEnd) ? inMonthRange(r.receiptYM, recvStart || undefined, recvEnd || undefined) : true;
+                    const prodPass = (prodStart || prodEnd) ? inMonthRange(r.productionYM, prodStart || undefined, prodEnd || undefined) : true;
+                    return mPass && dPass && mSearch && dSearch && recvPass && prodPass;
+                });
+            }, [processed, modelSel, defectSel, modelQuery, defectQuery, recvStart, recvEnd, prodStart, prodEnd]);
+
+            // KPI
+            const kpi = useMemo(() => {
+                const total = filtered.length;
+                const uniqueModels = new Set(filtered.map(r => r.model).filter(x => x !== "알수없음")).size;
+                const uniqueDefects = new Set(filtered.map(r => r.defectType).filter(x => x !== "알수없음")).size;
+                
+                const usageValues = filtered.map(r => diffMonths(r.productionYM, r.receiptYM)).filter(u => u !== null && u >= 0).sort((a, b) => a - b);
+                const medianUsage = usageValues.length > 0 ? usageValues[Math.floor(usageValues.length / 2)] : 0;
+                
+                const defectMap = new Map();
+                filtered.forEach(r => {
+                    if (r.defectType !== "알수없음") {
+                        defectMap.set(r.defectType, (defectMap.get(r.defectType) || 0) + 1);
+                    }
+                });
+                const top3Defects = [...defectMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name, count]) => ({
+                    name, count, ratio: total > 0 ? ((count / total) * 100).toFixed(1) : 0
+                }));
+
+                const modelMap = new Map();
+                filtered.forEach(r => {
+                    if (r.model !== "알수없음") {
+                        modelMap.set(r.model, (modelMap.get(r.model) || 0) + 1);
+                    }
+                });
+                const top3Models = [...modelMap.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name, count]) => ({
+                    name, count, ratio: total > 0 ? ((count / total) * 100).toFixed(1) : 0
+                }));
+
+                return { total, uniqueModels, uniqueDefects, medianUsage, top3Defects, top3Models };
+            }, [filtered]);
+
+            // 차트 데이터
+            const timeSeriesStacked = useMemo(() => {
+                if (!filtered.length) return { data: [], keys: [] };
+                const byDef = new Map();
+                filtered.forEach((r) => byDef.set(r.defectType, (byDef.get(r.defectType) || 0) + 1));
+                const top10 = [...byDef.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10).map((x) => x[0]);
+                const months = [...new Set(filtered.map((r) => r.receiptYM))].sort(monthCompare);
+                const rows = months.map((m) => {
+                    const obj = { month: m, total: 0 };
+                    let otherCount = 0;
+                    filtered.filter((r) => r.receiptYM === m).forEach((r) => {
+                        obj.total += 1;
+                        if (top10.includes(r.defectType)) {
+                            obj[r.defectType] = (obj[r.defectType] || 0) + 1;
+                        } else {
+                            otherCount += 1;
+                        }
+                    });
+                    obj["기타"] = otherCount;
+                    return obj;
+                });
+                const keys = [...top10, "기타"].filter(k => k !== '알수없음');
+                return { data: rows.filter(r => r.month !== '알수없음'), keys };
+            }, [filtered]);
+
+            const materialRate = useMemo(() => {
+                const total = filtered.length || 1;
+                const map = new Map();
+                filtered.forEach((r) => map.set(r.defectType, (map.get(r.defectType) || 0) + 1));
+                return [...map.entries()].sort((a, b) => b[1] - a[1]).map(([name, cnt]) => ({ name, count: cnt, ratio: Number((cnt / total).toFixed(4)) }));
+            }, [filtered]);
+
+            const materialRateCumulative = useMemo(() => {
+                let cumulativeCount = 0;
+                const total = filtered.length || 1;
+                return materialRate.map(r => {
+                    cumulativeCount += r.count;
+                    return { ...r, cumulativeCount, cumulativeRatio: cumulativeCount / total };
+                });
+            }, [materialRate, filtered.length]);
+
+            const heatmapProdRecv = useMemo(() => {
+                const matrix = new Map();
+                filtered.forEach(r => {
+                    if (r.productionYM !== "알수없음" && r.receiptYM !== "알수없음") {
+                        const key = `${r.productionYM}|${r.receiptYM}`;
+                        matrix.set(key, (matrix.get(key) || 0) + 1);
+                    }
+                });
+                let prodMonths = [...new Set(filtered.map(r => r.productionYM).filter(x => x !== "알수없음"))].sort();
+                let recvMonths = [...new Set(filtered.map(r => r.receiptYM).filter(x => x !== "알수없음"))].sort();
+                
+                if (heatmapSortOrder === 'desc') {
+                    prodMonths = prodMonths.reverse();
+                    recvMonths = recvMonths.reverse();
+                }
+                
+                const maxValue = Math.max(...matrix.values(), 1);
+                return { matrix, prodMonths, recvMonths, maxValue };
+            }, [filtered, heatmapSortOrder]);
+
+            const heatmapProdUsage = useMemo(() => {
+                const matrix = new Map();
+                filtered.forEach(r => {
+                    const usage = diffMonths(r.productionYM, r.receiptYM);
+                    if (usage !== null && usage >= 0 && r.productionYM !== "알수없음") {
+                        const key = `${r.productionYM}|${usage}`;
+                        matrix.set(key, (matrix.get(key) || 0) + 1);
+                    }
+                });
+                let prodMonths = [...new Set(filtered.map(r => r.productionYM).filter(x => x !== "알수없음"))].sort();
+                const usageBins = [...new Set([...matrix.keys()].map(k => parseInt(k.split('|')[1])))].sort((a, b) => a - b);
+                
+                if (heatmapSortOrder === 'desc') {
+                    prodMonths = prodMonths.reverse();
+                }
+                
+                const maxValue = Math.max(...matrix.values(), 1);
+                return { matrix, prodMonths, usageBins, maxValue };
+            }, [filtered, heatmapSortOrder]);
+
+            const mtbfData = useMemo(() => {
+                const modelUsage = new Map();
+                filtered.forEach(r => {
+                    const usage = diffMonths(r.productionYM, r.receiptYM);
+                    if (usage !== null && usage >= 0 && r.model !== "알수없음") {
+                        if (!modelUsage.has(r.model)) modelUsage.set(r.model, []);
+                        modelUsage.get(r.model).push(usage);
+                    }
+                });
+                const mtbf = [];
+                modelUsage.forEach((usages, model) => {
+                    const avg = usages.reduce((sum, u) => sum + u, 0) / usages.length;
+                    mtbf.push({ model, mtbf: parseFloat(avg.toFixed(1)), count: usages.length });
+                });
+                return mtbf.sort((a, b) => b.mtbf - a.mtbf).slice(0, 10);
+            }, [filtered]);
+
+            const radarData = useMemo(() => {
+                const modelDefects = new Map();
+                filtered.forEach(r => {
+                    if (r.model !== "알수없음" && r.defectType !== "알수없음") {
+                        if (!modelDefects.has(r.model)) modelDefects.set(r.model, new Map());
+                        const defMap = modelDefects.get(r.model);
+                        defMap.set(r.defectType, (defMap.get(r.defectType) || 0) + 1);
+                    }
+                });
+                const topModels = [...modelDefects.entries()].sort((a, b) => {
+                    const aTotal = [...a[1].values()].reduce((sum, v) => sum + v, 0);
+                    const bTotal = [...b[1].values()].reduce((sum, v) => sum + v, 0);
+                    return bTotal - aTotal;
+                }).slice(0, 5);
+                
+                const allDefects = new Set();
+                topModels.forEach(([_, defMap]) => {
+                    defMap.forEach((_, def) => allDefects.add(def));
+                });
+                
+                return [...allDefects].map(defect => {
+                    const point = { defect };
+                    topModels.forEach(([model, defMap]) => {
+                        point[model] = defMap.get(defect) || 0;
+                    });
+                    return point;
+                });
+            }, [filtered]);
+
+            const yearlyTrend = useMemo(() => {
+                const yearMap = new Map();
+                filtered.forEach(r => {
+                    const parts = ymToParts(r.receiptYM);
+                    if (parts) {
+                        yearMap.set(parts.y, (yearMap.get(parts.y) || 0) + 1);
+                    }
+                });
+                return [...yearMap.entries()].sort((a, b) => a[0] - b[0]).map(([year, count]) => ({ year: String(year), count }));
+            }, [filtered]);
+
+            // 산점도 데이터
+            const scatterData = useMemo(() => {
+                const materialGroups = new Map();
+                filtered.forEach(r => {
+                    const usage = diffMonths(r.productionYM, r.receiptYM);
+                    if (usage !== null && usage >= 0 && r.defectType !== "알수없음") {
+                        if (!materialGroups.has(r.defectType)) {
+                            materialGroups.set(r.defectType, []);
+                        }
+                        materialGroups.get(r.defectType).push(usage);
+                    }
+                });
+                
+                const result = [];
+                materialGroups.forEach((usages, material) => {
+                    usages.forEach((usage, idx) => {
+                        result.push({
+                            x: usage,
+                            y: usages.length,
+                            material,
+                            count: usages.length
+                        });
+                    });
+                });
+                return result;
+            }, [filtered]);
+
+            // 버블차트 데이터
+            const bubbleData = useMemo(() => {
+                const modelStats = new Map();
+                const total = filtered.length || 1;
+                
+                filtered.forEach(r => {
+                    if (r.model !== "알수없음") {
+                        if (!modelStats.has(r.model)) {
+                            modelStats.set(r.model, { count: 0, usages: [] });
+                        }
+                        const stats = modelStats.get(r.model);
+                        stats.count += 1;
+                        const usage = diffMonths(r.productionYM, r.receiptYM);
+                        if (usage !== null && usage >= 0) stats.usages.push(usage);
+                    }
+                });
+                
+                return [...modelStats.entries()]
+                    .map(([model, stats]) => ({
+                        model,
+                        x: stats.usages.length > 0 ? stats.usages.reduce((a, b) => a + b, 0) / stats.usages.length : 0,
+                        y: stats.count,
+                        z: ((stats.count / total) * 100).toFixed(1),
+                        ratio: ((stats.count / total) * 100).toFixed(1)
+                    }))
+                    .sort((a, b) => b.y - a.y)
+                    .slice(0, 20);
+            }, [filtered]);
+
+            // 트리맵 데이터
+            const treemapData = useMemo(() => {
+                const map = new Map();
+                filtered.forEach(r => {
+                    if (r.model !== "알수없음" && r.defectType !== "알수없음") {
+                        const key = `${r.model}|${r.defectType}`;
+                        map.set(key, (map.get(key) || 0) + 1);
+                    }
+                });
+                
+                const children = [];
+                map.forEach((count, key) => {
+                    const [model, defect] = key.split('|');
+                    children.push({
+                        name: `${model}\n${defect}`,
+                        size: count,
+                        model,
+                        defect
+                    });
+                });
+                
+                return [{
+                    name: "전체",
+                    children: children.sort((a, b) => b.size - a.size).slice(0, 30)
+                }];
+            }, [filtered]);
+
+            // 박스플롯 데이터
+            const boxPlotData = useMemo(() => {
+                const usageValues = filtered
+                    .map(r => diffMonths(r.productionYM, r.receiptYM))
+                    .filter(u => u !== null && u >= 0)
+                    .sort((a, b) => a - b);
+                
+                if (usageValues.length === 0) return null;
+                
+                const getQuantile = (arr, p) => {
+                    const index = p * (arr.length - 1);
+                    const i = Math.floor(index);
+                    const f = index - i;
+                    if (i === arr.length - 1) return arr[arr.length - 1];
+                    return arr[i] + f * (arr[i + 1] - arr[i]);
+                };
+                
+                const q1 = getQuantile(usageValues, 0.25);
+                const median = getQuantile(usageValues, 0.5);
+                const q3 = getQuantile(usageValues, 0.75);
+                const iqr = q3 - q1;
+                const min = Math.max(usageValues[0], q1 - 1.5 * iqr);
+                const max = Math.min(usageValues[usageValues.length - 1], q3 + 1.5 * iqr);
+                
+                return [{
+                    name: '사용기간',
+                    min: min.toFixed(1),
+                    q1: q1.toFixed(1),
+                    median: median.toFixed(1),
+                    q3: q3.toFixed(1),
+                    max: max.toFixed(1),
+                    avg: (usageValues.reduce((a, b) => a + b, 0) / usageValues.length).toFixed(1)
+                }];
+            }, [filtered]);
+
+            // 예측 데이터 (3개월 이동평균)
+            const forecastData = useMemo(() => {
+                const monthlyCount = new Map();
+                filtered.forEach(r => {
+                    if (r.receiptYM !== "알수없음") {
+                        monthlyCount.set(r.receiptYM, (monthlyCount.get(r.receiptYM) || 0) + 1);
+                    }
+                });
+                
+                const sorted = [...monthlyCount.entries()].sort((a, b) => monthCompare(a[0], b[0]));
+                const data = sorted.map(([month, count]) => ({ month, actual: count }));
+                
+                // 3개월 이동평균 계산
+                const result = data.map((item, idx) => {
+                    if (idx >= 2) {
+                        const ma3 = (data[idx].actual + data[idx-1].actual + data[idx-2].actual) / 3;
+                        return { ...item, ma3: parseFloat(ma3.toFixed(1)) };
+                    }
+                    return { ...item, ma3: null };
+                });
+                
+                // 다음 달 예측
+                if (result.length >= 3) {
+                    const lastMA = result[result.length - 1].ma3;
+                    const lastMonth = result[result.length - 1].month;
+                    const parts = ymToParts(lastMonth);
+                    
+                    if (parts && lastMA) {
+                        const nextMonth = parts.m === 12 
+                            ? `${parts.y + 1}-01` 
+                            : `${parts.y}-${String(parts.m + 1).padStart(2, '0')}`;
+                        
+                        result.push({
+                            month: nextMonth,
+                            actual: null,
+                            ma3: lastMA,
+                            forecast: true
+                        });
+                    }
+                }
+                
+                return result;
+            }, [filtered]);
+
+            // 바이올린 플롯 (히스토그램으로 대체)
+            const violinData = useMemo(() => {
+                const usageValues = filtered.map(r => diffMonths(r.productionYM, r.receiptYM)).filter(u => u !== null && u >= 0);
+                const bins = {};
+                usageValues.forEach(u => {
+                    const bin = Math.floor(u / 3) * 3;
+                    bins[bin] = (bins[bin] || 0) + 1;
+                });
+                return Object.entries(bins).map(([range, count]) => ({
+                    range: `${range}-${parseInt(range) + 2}개월`,
+                    rangeValue: parseInt(range),
+                    count
+                })).sort((a, b) => a.rangeValue - b.rangeValue);
+            }, [filtered]);
+
+            // 워터폴 차트 데이터
+            const waterfallData = useMemo(() => {
+                const monthlyCount = new Map();
+                filtered.forEach(r => {
+                    if (r.receiptYM !== "알수없음") {
+                        monthlyCount.set(r.receiptYM, (monthlyCount.get(r.receiptYM) || 0) + 1);
+                    }
+                });
+                
+                const sorted = [...monthlyCount.entries()].sort((a, b) => monthCompare(a[0], b[0]));
+                let cumulative = 0;
+                return sorted.map(([month, count]) => {
+                    const start = cumulative;
+                    cumulative += count;
+                    return { month, count, start, end: cumulative };
+                });
+            }, [filtered]);
+
+            // 구분별 비교 (고객유형 등)
+            const categoryData = useMemo(() => {
+                const categoryMap = new Map();
+                const total = filtered.length || 1;
+                
+                filtered.forEach(r => {
+                    const category = getFirstExisting(r.raw, ["구분", "고객유형", "유형", "Category"]) || "미분류";
+                    categoryMap.set(category, (categoryMap.get(category) || 0) + 1);
+                });
+                
+                return [...categoryMap.entries()]
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([name, count]) => ({
+                        name,
+                        count,
+                        ratio: ((count / total) * 100).toFixed(1)
+                    }));
+            }, [filtered]);
+
+            // 퍼널 차트 데이터 (처리 단계별)
+            const funnelData = useMemo(() => {
+                const total = filtered.length;
+                const completed = filtered.filter(r => r.repairFinish && String(r.repairFinish).trim() !== "").length;
+                const pending = total - completed;
+                
+                const materials = new Set(filtered.map(r => r.defectType).filter(x => x !== "알수없음")).size;
+                const models = new Set(filtered.map(r => r.model).filter(x => x !== "알수없음")).size;
+                
+                return [
+                    { stage: "접수", count: total, ratio: 100 },
+                    { stage: "분석 중", count: pending, ratio: ((pending / total) * 100).toFixed(1) },
+                    { stage: "수리 완료", count: completed, ratio: ((completed / total) * 100).toFixed(1) },
+                    { stage: "모델 종류", count: models, ratio: ((models / total) * 100).toFixed(1) },
+                    { stage: "사용자재 종류", count: materials, ratio: ((materials / total) * 100).toFixed(1) }
+                ];
+            }, [filtered]);
+
+            // 전년동월 비교
+            const yoyCompare = useMemo(() => {
+                const monthlyByYear = new Map();
+                
+                filtered.forEach(r => {
+                    const parts = ymToParts(r.receiptYM);
+                    if (parts) {
+                        const key = `${parts.y}-${parts.m}`;
+                        if (!monthlyByYear.has(key)) {
+                            monthlyByYear.set(key, { year: parts.y, month: parts.m, count: 0 });
+                        }
+                        monthlyByYear.get(key).count += 1;
+                    }
+                });
+                
+                const data = [...monthlyByYear.values()].sort((a, b) => {
+                    if (a.year !== b.year) return a.year - b.year;
+                    return a.month - b.month;
+                });
+                
+                // 각 월별로 전년 대비 계산
+                const result = data.map(item => {
+                    const prevYear = data.find(d => d.year === item.year - 1 && d.month === item.month);
+                    const growth = prevYear ? ((item.count - prevYear.count) / prevYear.count * 100).toFixed(1) : null;
+                    return {
+                        period: `${item.year}-${String(item.month).padStart(2, '0')}`,
+                        current: item.count,
+                        previous: prevYear?.count || 0,
+                        growth
+                    };
+                });
+                
+                return result.slice(-12); // 최근 12개월
+            }, [filtered]);
+
+            // 월별 세분화 (연도별 분리)
+            const monthlyByYear = useMemo(() => {
+                const yearData = new Map();
+                
+                filtered.forEach(r => {
+                    const parts = ymToParts(r.receiptYM);
+                    if (parts) {
+                        if (!yearData.has(parts.y)) {
+                            yearData.set(parts.y, new Map());
+                        }
+                        const monthMap = yearData.get(parts.y);
+                        monthMap.set(parts.m, (monthMap.get(parts.m) || 0) + 1);
+                    }
+                });
+                
+                const years = [...yearData.keys()].sort();
+                const months = Array.from({length: 12}, (_, i) => i + 1);
+                
+                return months.map(m => {
+                    const row = { month: `${m}월` };
+                    years.forEach(y => {
+                        row[`${y}년`] = yearData.get(y)?.get(m) || 0;
+                    });
+                    return row;
+                });
+            }, [filtered]);
+
+            const makeToggleModel = useCallback((m) => () => setModelSel((prev) => ({ ...prev, [m]: !prev[m] })), []);
+            const makeToggleDefect = useCallback((d) => () => setDefectSel((prev) => ({ ...prev, [d]: !prev[d] })), []);
+
+            const toggleAll = (type, state) => {
+                if (type === "model") {
+                    const newSel = {};
+                    modelOptions.forEach((m) => (newSel[m] = state));
+                    setModelSel(newSel);
+                } else if (type === "defect") {
+                    const newSel = {};
+                    defectOptions.forEach((d) => (newSel[d] = state));
+                    setDefectSel(newSel);
+                }
+            };
+
+            const exportChartData = (data, filename) => {
+                if (!requireExport(data && data.length > 0)) return;
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), "데이터");
+                saveWorkbookAs(wb, filename);
+            };
+
+            const exportAllSummary = useCallback(() => {
+                if (!requireExport(filtered.length > 0)) return;
+                const wb = XLSX.utils.book_new();
+                
+                // 1. KPI
+                const kpiData = [
+                    { 항목: "총 불량 건수", 값: kpi.total },
+                    { 항목: "총 모델 수", 값: kpi.uniqueModels },
+                    { 항목: "총 사용자재 수", 값: kpi.uniqueDefects },
+                    { 항목: "중앙값 사용기간", 값: kpi.medianUsage + "개월" },
+                ];
+                kpi.top3Models.forEach((m, idx) => {
+                    kpiData.push({ 항목: `TOP ${idx+1} 모델`, 값: `${m.name} (${m.count}건, ${m.ratio}%)` });
+                });
+                kpi.top3Defects.forEach((d, idx) => {
+                    kpiData.push({ 항목: `TOP ${idx+1} 사용자재`, 값: `${d.name} (${d.count}건, ${d.ratio}%)` });
+                });
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(kpiData), "KPI");
+                
+                // 2. 월별추이
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(timeSeriesStacked.data), "월별추이");
+                
+                // 3. 파레토
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(materialRateCumulative), "파레토");
+                
+                // 4. 코호트 히트맵
+                const cohortData = [];
+                heatmapProdRecv.prodMonths.forEach(pm => {
+                    const row = { 생산월: pm };
+                    heatmapProdRecv.recvMonths.forEach(rm => {
+                        row[rm] = heatmapProdRecv.matrix.get(`${pm}|${rm}`) || 0;
+                    });
+                    cohortData.push(row);
+                });
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(cohortData), "코호트");
+                
+                // 5. 사용기간 히트맵
+                const usageData = [];
+                heatmapProdUsage.prodMonths.forEach(pm => {
+                    const row = { 생산월: pm };
+                    heatmapProdUsage.usageBins.forEach(ub => {
+                        row[`${ub}개월`] = heatmapProdUsage.matrix.get(`${pm}|${ub}`) || 0;
+                    });
+                    usageData.push(row);
+                });
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(usageData), "사용기간");
+                
+                // 6. MTBF
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mtbfData), "MTBF");
+                
+                // 7. 레이더
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(radarData), "레이더");
+                
+                // 8. 연도별
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(yearlyTrend), "연도별");
+                
+                // 9. 산점도
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(scatterData), "산점도");
+                
+                // 10. 버블차트
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(bubbleData), "버블차트");
+                
+                // 11. 박스플롯
+                if (boxPlotData) {
+                    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(boxPlotData), "박스플롯");
+                }
+                
+                // 12. 예측
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(forecastData), "예측");
+                
+                // 13. 모델별
+                const modelCount = new Map();
+                const total = filtered.length || 1;
+                filtered.forEach(r => {
+                    if (r.model !== "알수없음") {
+                        modelCount.set(r.model, (modelCount.get(r.model) || 0) + 1);
+                    }
+                });
+                const modelData = [...modelCount.entries()].sort((a, b) => b[1] - a[1]).map(([model, count]) => ({
+                    모델: model,
+                    건수: count,
+                    비율: ((count / total) * 100).toFixed(2) + '%'
+                }));
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(modelData), "모델별");
+                
+                // 14. 사용자재별
+                const materialData = materialRateCumulative.map(r => ({
+                    사용자재: r.name,
+                    건수: r.count,
+                    비율: (r.ratio * 100).toFixed(2) + '%',
+                    누적비율: (r.cumulativeRatio * 100).toFixed(2) + '%'
+                }));
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(materialData), "사용자재별");
+                
+                // 15-20. 추가 차트
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(violinData), "밀도분포");
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(waterfallData), "워터폴");
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(categoryData), "구분별");
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(funnelData), "퍼널");
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(yoyCompare), "전년동월");
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(monthlyByYear), "월별연도");
+                
+                // 원본 데이터
+                const rawRows = filtered.map(r => r.raw);
+                XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rawRows), "원본데이터");
+                
+                saveWorkbookAs(wb, "부적합분석_전체보고서.xlsx");
+            }, [filtered, kpi, timeSeriesStacked, materialRateCumulative, heatmapProdRecv, heatmapProdUsage, mtbfData, radarData, yearlyTrend, scatterData, bubbleData, boxPlotData, forecastData, violinData, waterfallData, categoryData, funnelData, yoyCompare, monthlyByYear]);
+
+            return (
+                <div className="dashboard-container">
+                    <header className="gradient-bg py-6 px-8 rounded-3xl mb-8 shadow-2xl no-print">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h1 className="text-4xl font-bold text-white mb-2">📊 부적합 분석 대시보드 V3.0</h1>
+                                <p className="text-blue-100">실시간 데이터 분석 및 예측 시스템 - 완전판</p>
+                            </div>
+                            <div className="flex gap-3">
+                                <button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white backdrop-blur-sm transition-all">
+                                    <Printer /> 인쇄
+                                </button>
+                                <button onClick={exportAllSummary} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-orange-500 hover:bg-orange-600 text-white shadow-lg transition-all">
+                                    <File /> 전체 보고서
+                                </button>
+                                <label className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-500 hover:bg-blue-600 text-white shadow-lg cursor-pointer transition-all">
+                                    <Upload /> 업로드
+                                    <input type="file" accept={ACCEPT} onChange={onFile} className="hidden" />
+                                </label>
+                            </div>
+                        </div>
+                    </header>
+
+                    <div className="mb-8 no-print">
+                        <div className="rounded-2xl border bg-white shadow-md p-6">
+                            <div className="flex items-center justify-between">
+                                <div className="flex gap-8">
+                                    <div>
+                                        <div className="text-sm text-gray-500 mb-1">총 데이터</div>
+                                        <div className="text-3xl font-bold text-gray-800">{processed.length} 건</div>
+                                    </div>
+                                    <div className="border-l pl-8">
+                                        <div className="text-sm text-gray-500 mb-1">필터링 후</div>
+                                        <div className="text-3xl font-bold text-blue-600">{filtered.length} 건</div>
+                                    </div>
+                                </div>
+                                {isProcessing && (
+                                    <div className="flex items-center gap-3">
+                                        <div className="spinner"></div>
+                                        <span className="text-blue-600 font-medium">처리 중...</span>
+                                    </div>
+                                )}
+                                {error && (
+                                    <div className="flex items-center gap-2 text-red-600">
+                                        <XCircle /> <span>{error}</span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {filtered.length > 0 && (
+                        <>
+                            <div className="mb-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+                                <Cards title="총 불량 건수" value={kpi.total} icon="📦" color="blue" />
+                                <Cards title="총 모델 수" value={kpi.uniqueModels} icon="🔧" color="green" />
+                                <Cards title="총 사용자재 수" value={kpi.uniqueDefects} icon="⚠️" color="orange" />
+                                <Cards title="초기 불량 중앙값" value={`${kpi.medianUsage}개월`} icon="⏱️" color="purple" />
+                                <div className="rounded-2xl border bg-white shadow-md p-5 card-hover">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">TOP 3 불량 모델</div>
+                                        <Award />
+                                    </div>
+                                    <div className="space-y-1">
+                                        {kpi.top3Models.map((item, idx) => (
+                                            <div key={idx} className="flex justify-between text-xs">
+                                                <span className="font-medium text-gray-700">{idx + 1}. {item.name}</span>
+                                                <span className="text-blue-600 font-bold">{item.ratio}%</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="rounded-2xl border bg-white shadow-md p-5 card-hover">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">TOP 3 사용자재</div>
+                                        <Award />
+                                    </div>
+                                    <div className="space-y-1">
+                                        {kpi.top3Defects.map((item, idx) => (
+                                            <div key={idx} className="flex justify-between text-xs">
+                                                <span className="font-medium text-gray-700">{idx + 1}. {item.name}</span>
+                                                <span className="text-red-600 font-bold">{item.ratio}%</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="mb-8 grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
+                                <div className="rounded-2xl border bg-white shadow-md p-5">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <div className="font-bold text-lg">모델 필터</div>
+                                        <div className="flex gap-2">
+                                            <button className="px-3 py-1 rounded-lg border text-xs hover:bg-gray-50 transition-colors" onClick={() => toggleAll("model", true)}>전체</button>
+                                            <button className="px-3 py-1 rounded-lg border text-xs hover:bg-gray-50 transition-colors" onClick={() => toggleAll("model", false)}>해제</button>
+                                        </div>
+                                    </div>
+                                    <div className="relative mb-3">
+                                        <input type="text" placeholder="모델명 검색" value={modelQuery} onChange={(e) => setModelQuery(e.target.value)} className="w-full pl-3 pr-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 transition-all" />
+                                    </div>
+                                    <div className="h-48 overflow-auto border rounded-xl">
+                                        {modelOptions.filter((m) => (modelQuery ? m.toLowerCase().includes(modelQuery.toLowerCase()) : true)).map((m) => (
+                                            <CheckboxRow key={m} label={m} checked={!!modelSel[m]} onToggle={makeToggleModel(m)} />
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="rounded-2xl border bg-white shadow-md p-5">
+                                    <div className="flex items-center justify-between mb-3">
+                                        <div className="font-bold text-lg">사용자재 필터</div>
+                                        <div className="flex gap-2">
+                                            <button className="px-3 py-1 rounded-lg border text-xs hover:bg-gray-50 transition-colors" onClick={() => toggleAll("defect", true)}>전체</button>
+                                            <button className="px-3 py-1 rounded-lg border text-xs hover:bg-gray-50 transition-colors" onClick={() => toggleAll("defect", false)}>해제</button>
+                                        </div>
+                                    </div>
+                                    <div className="relative mb-3">
+                                        <input type="text" placeholder="사용자재 검색" value={defectQuery} onChange={(e) => setDefectQuery(e.target.value)} className="w-full pl-3 pr-3 py-2 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 transition-all" />
+                                    </div>
+                                    <div className="h-48 overflow-auto border rounded-xl">
+                                        {defectOptions.filter((d) => (defectQuery ? d.toLowerCase().includes(defectQuery.toLowerCase()) : true)).map((d) => (
+                                            <CheckboxRow key={d} label={d} checked={!!defectSel[d]} onToggle={makeToggleDefect(d)} />
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="rounded-2xl border bg-white shadow-md p-5">
+                                    <div className="font-bold text-lg mb-3">기간 필터</div>
+                                    <div className="space-y-3">
+                                        <div>
+                                            <label className="block text-sm font-medium mb-2">접수월</label>
+                                            <div className="flex gap-2">
+                                                <input 
+                                                    type="month" 
+                                                    value={recvStart} 
+                                                    onChange={(e) => setRecvStart(e.target.value)} 
+                                                    className="w-1/2 border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" 
+                                                />
+                                                <input 
+                                                    type="month" 
+                                                    value={recvEnd} 
+                                                    onChange={(e) => setRecvEnd(e.target.value)} 
+                                                    className="w-1/2 border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" 
+                                                />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium mb-2">생산월</label>
+                                            <div className="flex gap-2">
+                                                <input 
+                                                    type="month" 
+                                                    value={prodStart} 
+                                                    onChange={(e) => setProdStart(e.target.value)} 
+                                                    className="w-1/2 border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" 
+                                                />
+                                                <input 
+                                                    type="month" 
+                                                    value={prodEnd} 
+                                                    onChange={(e) => setProdEnd(e.target.value)} 
+                                                    className="w-1/2 border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500" 
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-8">
+                                {/* 1. 월별 추이 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold flex items-center gap-2">
+                                            <TrendingUp /> 1. 월별 접수 건수 추이 (Top 10 사용자재)
+                                        </h3>
+                                        <button onClick={() => exportChartData(timeSeriesStacked.data, "월별추이.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <BarChart data={timeSeriesStacked.data}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="month" />
+                                                <YAxis allowDecimals={false} />
+                                                <Tooltip />
+                                                <Legend />
+                                                {timeSeriesStacked.keys.map((key, index) => (
+                                                    <Bar key={key} dataKey={key} stackId="a" fill={palette[index % palette.length]} />
+                                                ))}
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 2. 파레토 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">2. 사용자재별 파레토 분석</h3>
+                                        <button onClick={() => exportChartData(materialRateCumulative.slice(0, 10), "파레토.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full" style={{height: '468px'}}>
+                                        <ResponsiveContainer>
+                                            <ComposedChart data={materialRateCumulative.slice(0, 10)}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="name" angle={-30} textAnchor="end" height={80} interval={0} />
+                                                <YAxis yAxisId="left" orientation="left" stroke={palette[0]} allowDecimals={false} />
+                                                <YAxis yAxisId="right" orientation="right" stroke={palette[3]} domain={[0, 1]} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
+                                                <Tooltip formatter={(value, name) => name === "cumulativeRatio" ? [`${(value * 100).toFixed(2)}%`, "누적비율"] : [value, "건수"]} />
+                                                <Legend />
+                                                <Bar yAxisId="left" dataKey="count" name="건수" fill={palette[0]} />
+                                                <Line yAxisId="right" type="monotone" dataKey="cumulativeRatio" name="누적비율" stroke={palette[3]} strokeWidth={2} />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 3. 히트맵 - 생산월 x 접수월 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">3. 코호트 분석 (생산월 × 접수월)</h3>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => {
+                                                const cohortData = [];
+                                                heatmapProdRecv.prodMonths.forEach(pm => {
+                                                    const row = { 생산월: pm };
+                                                    heatmapProdRecv.recvMonths.forEach(rm => {
+                                                        row[rm] = heatmapProdRecv.matrix.get(`${pm}|${rm}`) || 0;
+                                                    });
+                                                    cohortData.push(row);
+                                                });
+                                                exportChartData(cohortData, "코호트분석.xlsx");
+                                            }} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                                <Download /> 내보내기
+                                            </button>
+                                            <select value={heatmapSortOrder} onChange={(e) => setHeatmapSortOrder(e.target.value)} className="px-3 py-1 border rounded-lg text-sm">
+                                                <option value="asc">과거 → 최근</option>
+                                                <option value="desc">최근 → 과거</option>
+                                            </select>
+                                            <select value={heatmapColorScheme} onChange={(e) => setHeatmapColorScheme(e.target.value)} className="px-3 py-1 border rounded-lg text-sm">
+                                                <option value="blue">파란색</option>
+                                                <option value="red">빨간색</option>
+                                                <option value="green">녹색</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div className="overflow-auto" style={{maxHeight: '768px'}}>
+                                        <table className="w-full text-xs border-collapse heatmap-table">
+                                            <thead>
+                                                <tr>
+                                                    <th className="sticky-header sticky-left p-2 border bg-gray-100 font-bold">생산월 \ 접수월</th>
+                                                    {heatmapProdRecv.recvMonths.map((rm, idx) => (
+                                                        <th 
+                                                            key={rm} 
+                                                            className={`sticky-header p-2 border bg-gray-100 font-semibold whitespace-nowrap ${hoveredCol === idx ? 'heatmap-col-hover' : ''}`}
+                                                            onMouseEnter={() => setHoveredCol(idx)}
+                                                            onMouseLeave={() => setHoveredCol(null)}
+                                                        >
+                                                            {rm}
+                                                        </th>
+                                                    ))}
+                                                    <th className="sticky-header sticky-right p-2 border bg-gray-100 font-bold">합계</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {heatmapProdRecv.prodMonths.map((pm, rowIdx) => {
+                                                    let rowTotal = 0;
+                                                    return (
+                                                        <tr 
+                                                            key={pm} 
+                                                            className={`heatmap-row ${hoveredRow === rowIdx ? 'bg-blue-50' : ''}`}
+                                                            onMouseEnter={() => setHoveredRow(rowIdx)}
+                                                            onMouseLeave={() => setHoveredRow(null)}
+                                                        >
+                                                            <td className="sticky-left p-2 border bg-gray-50 font-semibold whitespace-nowrap">{pm}</td>
+                                                            {heatmapProdRecv.recvMonths.map((rm, colIdx) => {
+                                                                const val = heatmapProdRecv.matrix.get(`${pm}|${rm}`) || 0;
+                                                                rowTotal += val;
+                                                                return (
+                                                                    <td
+                                                                        key={rm}
+                                                                        className={`heatmap-cell p-2 border text-center font-medium ${hoveredCol === colIdx ? 'heatmap-col-hover' : ''}`}
+                                                                        style={{ backgroundColor: getHeatColor(val, heatmapProdRecv.maxValue, heatmapColorScheme) }}
+                                                                        onClick={() => {
+                                                                            if (val > 0) {
+                                                                                const rows = filtered.filter(r => r.productionYM === pm && r.receiptYM === rm);
+                                                                                openModal(`생산월 ${pm} → 접수월 ${rm} (${val}건)`, rows);
+                                                                            }
+                                                                        }}
+                                                                    >
+                                                                        {val > 0 ? val : ''}
+                                                                    </td>
+                                                                );
+                                                            })}
+                                                            <td className="sticky-right p-2 border text-center font-bold bg-gray-50">{rowTotal}</td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                {/* 4. 히트맵 - 생산월 x 사용기간 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">4. 사용기간 분석 (생산월 × 사용기간)</h3>
+                                        <button onClick={() => {
+                                            const usageData = [];
+                                            heatmapProdUsage.prodMonths.forEach(pm => {
+                                                const row = { 생산월: pm };
+                                                heatmapProdUsage.usageBins.forEach(ub => {
+                                                    row[`${ub}개월`] = heatmapProdUsage.matrix.get(`${pm}|${ub}`) || 0;
+                                                });
+                                                usageData.push(row);
+                                            });
+                                            exportChartData(usageData, "사용기간분석.xlsx");
+                                        }} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="overflow-auto" style={{maxHeight: '768px'}}>
+                                        <table className="w-full text-xs border-collapse heatmap-table">
+                                            <thead>
+                                                <tr>
+                                                    <th className="sticky-header sticky-left p-2 border bg-gray-100 font-bold">생산월 \ 사용기간</th>
+                                                    {heatmapProdUsage.usageBins.map((ub, idx) => (
+                                                        <th 
+                                                            key={ub} 
+                                                            className={`sticky-header p-2 border bg-gray-100 font-semibold whitespace-nowrap ${hoveredCol === idx ? 'heatmap-col-hover' : ''}`}
+                                                            onMouseEnter={() => setHoveredCol(idx)}
+                                                            onMouseLeave={() => setHoveredCol(null)}
+                                                        >
+                                                            {ub}개월
+                                                        </th>
+                                                    ))}
+                                                    <th className="sticky-header sticky-right p-2 border bg-gray-100 font-bold">합계</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {heatmapProdUsage.prodMonths.map((pm, rowIdx) => {
+                                                    let rowTotal = 0;
+                                                    return (
+                                                        <tr 
+                                                            key={pm}
+                                                            className={`heatmap-row ${hoveredRow === rowIdx ? 'bg-blue-50' : ''}`}
+                                                            onMouseEnter={() => setHoveredRow(rowIdx)}
+                                                            onMouseLeave={() => setHoveredRow(null)}
+                                                        >
+                                                            <td className="sticky-left p-2 border bg-gray-50 font-semibold whitespace-nowrap">{pm}</td>
+                                                            {heatmapProdUsage.usageBins.map((ub, colIdx) => {
+                                                                const val = heatmapProdUsage.matrix.get(`${pm}|${ub}`) || 0;
+                                                                rowTotal += val;
+                                                                return (
+                                                                    <td
+                                                                        key={ub}
+                                                                        className={`heatmap-cell p-2 border text-center font-medium ${hoveredCol === colIdx ? 'heatmap-col-hover' : ''}`}
+                                                                        style={{ backgroundColor: getHeatColor(val, heatmapProdUsage.maxValue, heatmapColorScheme) }}
+                                                                        onClick={() => {
+                                                                            if (val > 0) {
+                                                                                const rows = filtered.filter(r => {
+                                                                                    const usage = diffMonths(r.productionYM, r.receiptYM);
+                                                                                    return r.productionYM === pm && usage === ub;
+                                                                                });
+                                                                                openModal(`생산월 ${pm} / 사용기간 ${ub}개월 (${val}건)`, rows);
+                                                                            }
+                                                                        }}
+                                                                    >
+                                                                        {val > 0 ? val : ''}
+                                                                    </td>
+                                                                );
+                                                            })}
+                                                            <td className="sticky-right p-2 border text-center font-bold bg-gray-50">{rowTotal}</td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                {/* 5. MTBF */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">5. 모델별 평균 고장 간격 (MTBF - Top 10)</h3>
+                                        <button onClick={() => exportChartData(mtbfData, "MTBF.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <BarChart data={mtbfData} layout="vertical">
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis type="number" label={{ value: 'MTBF (개월)', position: 'bottom' }} />
+                                                <YAxis type="category" dataKey="model" width={100} />
+                                                <Tooltip />
+                                                <Bar dataKey="mtbf" fill={palette[2]}>
+                                                    {mtbfData.map((entry, index) => (
+                                                        <Cell key={`cell-${index}`} fill={palette[index % palette.length]} />
+                                                    ))}
+                                                </Bar>
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 6. 레이더 차트 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">6. Top 5 모델별 사용자재 분포</h3>
+                                        <button onClick={() => exportChartData(radarData, "레이더.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-96">
+                                        <ResponsiveContainer>
+                                            <RadarChart data={radarData}>
+                                                <PolarGrid />
+                                                <PolarAngleAxis dataKey="defect" />
+                                                <PolarRadiusAxis />
+                                                <Tooltip />
+                                                <Legend />
+                                                {radarData.length > 0 && Object.keys(radarData[0]).filter(k => k !== 'defect').map((model, idx) => (
+                                                    <Radar key={model} name={model} dataKey={model} stroke={palette[idx % palette.length]} fill={palette[idx % palette.length]} fillOpacity={0.3} />
+                                                ))}
+                                            </RadarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 7. 연도별 추이 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">7. 연도별 접수 추이</h3>
+                                        <button onClick={() => exportChartData(yearlyTrend, "연도별추이.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <AreaChart data={yearlyTrend}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="year" />
+                                                <YAxis allowDecimals={false} />
+                                                <Tooltip />
+                                                <Legend />
+                                                <Area type="monotone" dataKey="count" name="접수 건수" fill={palette[5]} stroke={palette[5]} fillOpacity={0.6} />
+                                            </AreaChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 8. 산점도 (사용기간 vs 불량) */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">8. 사용기간 분포 산점도</h3>
+                                        <button onClick={() => exportChartData(scatterData, "산점도.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <ScatterChart>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis 
+                                                    dataKey="x" 
+                                                    name="사용기간" 
+                                                    label={{ value: '사용기간 (개월)', position: 'bottom', offset: 0 }} 
+                                                />
+                                                <YAxis 
+                                                    dataKey="y" 
+                                                    name="건수" 
+                                                    label={{ value: '건수', angle: -90, position: 'insideLeft' }} 
+                                                    allowDecimals={false}
+                                                />
+                                                <Tooltip 
+                                                    cursor={{ strokeDasharray: '3 3' }}
+                                                    formatter={(value, name) => {
+                                                        if (name === 'x') return [value + '개월', '사용기간'];
+                                                        if (name === 'y') return [value + '건', '건수'];
+                                                        return [value, name];
+                                                    }}
+                                                />
+                                                <Legend />
+                                                <Scatter name="불량 발생" data={scatterData} fill={palette[0]}>
+                                                    {scatterData.map((entry, index) => (
+                                                        <Cell key={`cell-${index}`} fill={palette[index % palette.length]} />
+                                                    ))}
+                                                </Scatter>
+                                            </ScatterChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 9. 버블차트 (모델별 현황) */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">9. 모델별 현황 버블차트 (Top 20)</h3>
+                                        <button onClick={() => exportChartData(bubbleData, "버블차트.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <ScatterChart>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis 
+                                                    dataKey="x" 
+                                                    name="평균 사용기간" 
+                                                    label={{ value: '평균 사용기간 (개월)', position: 'bottom', offset: 0 }} 
+                                                />
+                                                <YAxis 
+                                                    dataKey="y" 
+                                                    name="불량 건수" 
+                                                    label={{ value: '불량 건수', angle: -90, position: 'insideLeft' }} 
+                                                    allowDecimals={false}
+                                                />
+                                                <Tooltip 
+                                                    cursor={{ strokeDasharray: '3 3' }}
+                                                    content={({ active, payload }) => {
+                                                        if (active && payload && payload.length) {
+                                                            const data = payload[0].payload;
+                                                            return (
+                                                                <div className="bg-white p-3 border rounded shadow-lg">
+                                                                    <p className="font-bold">{data.model}</p>
+                                                                    <p className="text-sm">평균 사용기간: {data.x.toFixed(1)}개월</p>
+                                                                    <p className="text-sm">불량 건수: {data.y}건</p>
+                                                                    <p className="text-sm text-red-600 font-bold">비율: {data.ratio}%</p>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }}
+                                                />
+                                                <Scatter name="모델" data={bubbleData} fill={palette[4]}>
+                                                    {bubbleData.map((entry, index) => (
+                                                        <Cell key={`cell-${index}`} fill={palette[index % palette.length]} />
+                                                    ))}
+                                                </Scatter>
+                                            </ScatterChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 10. 트리맵 대체 - 모델-사용자재 분포 (바 차트) */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">10. 모델-사용자재 분포 (Top 30)</h3>
+                                        <button onClick={() => {
+                                            const exportData = treemapData[0]?.children || [];
+                                            exportChartData(exportData, "모델사용자재분포.xlsx");
+                                        }} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-96">
+                                        <ResponsiveContainer>
+                                            <BarChart 
+                                                data={treemapData[0]?.children.slice(0, 20) || []} 
+                                                layout="horizontal"
+                                                margin={{ top: 5, right: 30, left: 20, bottom: 100 }}
+                                            >
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis 
+                                                    dataKey="name" 
+                                                    angle={-45} 
+                                                    textAnchor="end" 
+                                                    height={120}
+                                                    interval={0}
+                                                />
+                                                <YAxis allowDecimals={false} />
+                                                <Tooltip 
+                                                    content={({ active, payload }) => {
+                                                        if (active && payload && payload.length) {
+                                                            const data = payload[0].payload;
+                                                            return (
+                                                                <div className="bg-white p-3 border rounded shadow-lg">
+                                                                    <p className="font-bold">{data.model}</p>
+                                                                    <p className="text-sm">사용자재: {data.defect}</p>
+                                                                    <p className="text-sm text-red-600 font-bold">건수: {data.size}건</p>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }}
+                                                />
+                                                <Legend />
+                                                <Bar dataKey="size" name="불량 건수" fill={palette[0]}>
+                                                    {treemapData[0]?.children.slice(0, 20).map((entry, index) => (
+                                                        <Cell key={`cell-${index}`} fill={palette[index % palette.length]} />
+                                                    ))}
+                                                </Bar>
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 11. 박스플롯 (사용기간 분포) */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">11. 사용기간 분포 박스플롯</h3>
+                                        <button onClick={() => boxPlotData && exportChartData(boxPlotData, "박스플롯.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    {boxPlotData ? (
+                                        <div className="w-full h-80">
+                                            <div className="h-full flex items-center justify-center">
+                                                <div className="w-full max-w-2xl">
+                                                    <div className="relative h-64 border-l-2 border-b-2 border-gray-300 ml-16 mb-12">
+                                                        {/* Y축 레이블 */}
+                                                        <div className="absolute -left-12 top-0 bottom-0 flex items-center">
+                                                            <span className="transform -rotate-90 text-sm text-gray-600">사용기간 (개월)</span>
+                                                        </div>
+                                                        
+                                                        {/* 박스플롯 시각화 */}
+                                                        <div className="absolute left-1/4 right-1/4 h-full flex flex-col justify-center">
+                                                            {/* 최댓값 선 */}
+                                                            <div className="relative h-full flex flex-col justify-between py-4">
+                                                                <div className="text-center">
+                                                                    <div className="h-px bg-gray-400 w-full mb-1"></div>
+                                                                    <span className="text-xs font-bold text-gray-700">최댓값: {boxPlotData[0].max}개월</span>
+                                                                </div>
+                                                                
+                                                                {/* 중앙 박스 */}
+                                                                <div className="relative bg-blue-200 border-2 border-blue-500 p-4">
+                                                                    <div className="absolute top-0 left-0 right-0 text-center -mt-6">
+                                                                        <span className="text-xs text-gray-600">Q3: {boxPlotData[0].q3}개월</span>
+                                                                    </div>
+                                                                    <div className="h-px bg-red-500 w-full"></div>
+                                                                    <div className="text-center">
+                                                                        <span className="text-sm font-bold text-red-600">중앙값: {boxPlotData[0].median}개월</span>
+                                                                    </div>
+                                                                    <div className="absolute bottom-0 left-0 right-0 text-center -mb-6">
+                                                                        <span className="text-xs text-gray-600">Q1: {boxPlotData[0].q1}개월</span>
+                                                                    </div>
+                                                                </div>
+                                                                
+                                                                <div className="text-center">
+                                                                    <div className="h-px bg-gray-400 w-full mt-1"></div>
+                                                                    <span className="text-xs font-bold text-gray-700">최솟값: {boxPlotData[0].min}개월</span>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        
+                                                        {/* X축 레이블 */}
+                                                        <div className="absolute -bottom-8 left-0 right-0 text-center">
+                                                            <span className="text-sm text-gray-600">평균: {boxPlotData[0].avg}개월</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="w-full h-80 flex items-center justify-center text-gray-500">
+                                            데이터가 없습니다.
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* 12. 예측 분석 (3개월 이동평균) */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">12. 불량률 추세 예측 (3개월 이동평균)</h3>
+                                        <button onClick={() => exportChartData(forecastData, "예측분석.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <ComposedChart data={forecastData}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="month" angle={-30} textAnchor="end" height={80} />
+                                                <YAxis allowDecimals={false} />
+                                                <Tooltip />
+                                                <Legend />
+                                                <Bar dataKey="actual" name="실제 건수" fill={palette[0]} fillOpacity={0.6} />
+                                                <Line 
+                                                    type="monotone" 
+                                                    dataKey="ma3" 
+                                                    name="3개월 이동평균" 
+                                                    stroke={palette[3]} 
+                                                    strokeWidth={3}
+                                                    dot={{ fill: palette[3], r: 4 }}
+                                                />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    {forecastData.length > 0 && forecastData[forecastData.length - 1].forecast && (
+                                        <div className="mt-4 p-4 bg-blue-50 rounded-xl border border-blue-200">
+                                            <p className="text-sm text-blue-800">
+                                                <span className="font-bold">📊 예측:</span> 다음 달 ({forecastData[forecastData.length - 1].month}) 예상 불량 건수는 약 <span className="font-bold text-lg text-blue-600">{forecastData[forecastData.length - 1].ma3}건</span>입니다.
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* 13. 모델별/사용자재별 테이블 */}
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                    <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                        <h3 className="text-xl font-bold mb-4">8. 모델별 불량 현황</h3>
+                                        <div className="overflow-auto max-h-96">
+                                            <table className="w-full text-sm">
+                                                <thead className="sticky-header bg-gray-50">
+                                                    <tr>
+                                                        <th className="p-2 text-left border font-semibold">모델</th>
+                                                        <th className="p-2 text-right border font-semibold">건수</th>
+                                                        <th className="p-2 text-right border font-semibold">비율 (%)</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {(() => {
+                                                        const modelCount = new Map();
+                                                        const total = filtered.length || 1;
+                                                        filtered.forEach(r => {
+                                                            if (r.model !== "알수없음") {
+                                                                modelCount.set(r.model, (modelCount.get(r.model) || 0) + 1);
+                                                            }
+                                                        });
+                                                        return [...modelCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([model, count], idx) => (
+                                                            <tr key={idx} className="hover:bg-gray-50">
+                                                                <td className="p-2 border">{model}</td>
+                                                                <td className="p-2 text-right border font-medium">{count}</td>
+                                                                <td className="p-2 text-right border">{((count / total) * 100).toFixed(2)}</td>
+                                                            </tr>
+                                                        ));
+                                                    })()}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                        <h3 className="text-xl font-bold mb-4">9. 사용자재별 불량 현황</h3>
+                                        <div className="overflow-auto max-h-96">
+                                            <table className="w-full text-sm">
+                                                <thead className="sticky-header bg-gray-50">
+                                                    <tr>
+                                                        <th className="p-2 text-left border font-semibold">사용자재</th>
+                                                        <th className="p-2 text-right border font-semibold">건수</th>
+                                                        <th className="p-2 text-right border font-semibold">비율 (%)</th>
+                                                        <th className="p-2 text-right border font-semibold">누적 (%)</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {materialRateCumulative.slice(0, 15).map((r, idx) => (
+                                                        <tr key={idx} className="hover:bg-gray-50">
+                                                            <td className="p-2 border">{r.name}</td>
+                                                            <td className="p-2 text-right border font-medium">{r.count}</td>
+                                                            <td className="p-2 text-right border">{(r.ratio * 100).toFixed(2)}</td>
+                                                            <td className="p-2 text-right border font-bold text-blue-600">{(r.cumulativeRatio * 100).toFixed(2)}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* 15. 바이올린 플롯 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">15. 사용기간 밀도 분포</h3>
+                                        <button onClick={() => exportChartData(violinData, "밀도분포.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <BarChart data={violinData}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="range" angle={-30} textAnchor="end" height={80} />
+                                                <YAxis allowDecimals={false} label={{ value: '건수', angle: -90, position: 'insideLeft' }} />
+                                                <Tooltip />
+                                                <Legend />
+                                                <Bar dataKey="count" name="불량 건수" fill={palette[4]} />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 16. 워터폴 차트 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">16. 월별 누적 추이 (워터폴)</h3>
+                                        <button onClick={() => exportChartData(waterfallData, "워터폴.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <BarChart data={waterfallData}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="month" angle={-30} textAnchor="end" height={80} />
+                                                <YAxis allowDecimals={false} />
+                                                <Tooltip />
+                                                <Legend />
+                                                <Bar dataKey="count" name="증가분" fill={palette[2]} stackId="a" />
+                                                <Bar dataKey="start" name="기준" fill="transparent" stackId="a" />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 17. 구분별 비교 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">17. 구분별 비교 (고객유형)</h3>
+                                        <button onClick={() => exportChartData(categoryData, "구분별비교.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <BarChart data={categoryData} layout="vertical">
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis type="number" />
+                                                <YAxis type="category" dataKey="name" width={100} />
+                                                <Tooltip 
+                                                    formatter={(value, name) => {
+                                                        if (name === 'count') return [value + '건', '건수'];
+                                                        if (name === 'ratio') return [value + '%', '비율'];
+                                                        return [value, name];
+                                                    }}
+                                                />
+                                                <Legend />
+                                                <Bar dataKey="count" name="건수" fill={palette[6]}>
+                                                    {categoryData.map((entry, index) => (
+                                                        <Cell key={`cell-${index}`} fill={palette[index % palette.length]} />
+                                                    ))}
+                                                </Bar>
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 18. 퍼널 차트 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">18. 처리 단계별 퍼널</h3>
+                                        <button onClick={() => exportChartData(funnelData, "퍼널.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <BarChart data={funnelData} layout="vertical">
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis type="number" />
+                                                <YAxis type="category" dataKey="stage" width={100} />
+                                                <Tooltip 
+                                                    content={({ active, payload }) => {
+                                                        if (active && payload && payload.length) {
+                                                            const data = payload[0].payload;
+                                                            return (
+                                                                <div className="bg-white p-3 border rounded shadow-lg">
+                                                                    <p className="font-bold">{data.stage}</p>
+                                                                    <p className="text-sm">건수: {data.count}</p>
+                                                                    <p className="text-sm text-blue-600">비율: {data.ratio}%</p>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }}
+                                                />
+                                                <Bar dataKey="count" name="건수" fill={palette[7]}>
+                                                    {funnelData.map((entry, index) => (
+                                                        <Cell key={`cell-${index}`} fill={palette[index % palette.length]} />
+                                                    ))}
+                                                </Bar>
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 19. 전년동월 비교 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">19. 전년동월 비교 (최근 12개월)</h3>
+                                        <button onClick={() => exportChartData(yoyCompare, "전년동월비교.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <ComposedChart data={yoyCompare}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="period" angle={-30} textAnchor="end" height={80} />
+                                                <YAxis allowDecimals={false} />
+                                                <Tooltip 
+                                                    content={({ active, payload }) => {
+                                                        if (active && payload && payload.length) {
+                                                            const data = payload[0].payload;
+                                                            return (
+                                                                <div className="bg-white p-3 border rounded shadow-lg">
+                                                                    <p className="font-bold">{data.period}</p>
+                                                                    <p className="text-sm">금년: {data.current}건</p>
+                                                                    <p className="text-sm">전년: {data.previous}건</p>
+                                                                    {data.growth && (
+                                                                        <p className={`text-sm font-bold ${parseFloat(data.growth) > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                                            증감: {data.growth}%
+                                                                        </p>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }}
+                                                />
+                                                <Legend />
+                                                <Bar dataKey="current" name="금년" fill={palette[0]} />
+                                                <Bar dataKey="previous" name="전년" fill={palette[8]} />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+
+                                {/* 20. 월별 세분화 */}
+                                <div className="rounded-2xl border bg-white shadow-md p-6 card-hover">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h3 className="text-xl font-bold">20. 월별 접수 추이 (연도별 비교)</h3>
+                                        <button onClick={() => exportChartData(monthlyByYear, "월별연도비교.xlsx")} className="px-3 py-1 rounded-lg border text-sm hover:bg-gray-50">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    <div className="w-full h-80">
+                                        <ResponsiveContainer>
+                                            <LineChart data={monthlyByYear}>
+                                                <CartesianGrid strokeDasharray="3 3" />
+                                                <XAxis dataKey="month" />
+                                                <YAxis allowDecimals={false} />
+                                                <Tooltip />
+                                                <Legend />
+                                                {monthlyByYear.length > 0 && Object.keys(monthlyByYear[0]).filter(k => k !== 'month').map((year, idx) => (
+                                                    <Line 
+                                                        key={year} 
+                                                        type="monotone" 
+                                                        dataKey={year} 
+                                                        name={year} 
+                                                        stroke={palette[idx % palette.length]} 
+                                                        strokeWidth={2}
+                                                        dot={{ r: 4 }}
+                                                    />
+                                                ))}
+                                            </LineChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+                            </div>
+                        </>
+                    )}
+
+                    {/* 모달 */}
+                    {modalOpen && (
+                        <div className="modal-overlay no-print" onClick={() => setModalOpen(false)}>
+                            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                                <header className="p-6 border-b flex items-center justify-between gradient-bg">
+                                    <h2 className="text-2xl font-bold text-white">{modalTitle}</h2>
+                                    <button onClick={() => setModalOpen(false)} className="p-2 rounded-full hover:bg-white/20 transition-colors">
+                                        <XCircle />
+                                    </button>
+                                </header>
+                                <div className="p-6 flex flex-col gap-4 overflow-auto flex-grow">
+                                    <div className="flex items-center gap-3">
+                                        <div className="relative flex-1">
+                                            <input type="text" placeholder="검색..." value={modalSearch} onChange={(e) => setModalSearch(e.target.value)} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-blue-500" />
+                                        </div>
+                                        <button onClick={() => setShowColPicker(!showColPicker)} className="px-4 py-2 rounded-xl border bg-gray-50 hover:bg-gray-100">
+                                            컬럼 {showColPicker ? '▲' : '▼'}
+                                        </button>
+                                        <button onClick={() => exportChartData(modalRows, "상세내역.xlsx")} className="px-4 py-2 rounded-xl border bg-blue-50 hover:bg-blue-100">
+                                            <Download /> 내보내기
+                                        </button>
+                                    </div>
+                                    {showColPicker && (
+                                        <div className="p-4 border rounded-xl bg-gray-50">
+                                            <div className="font-semibold mb-2">표시 컬럼:</div>
+                                            <div className="grid grid-cols-4 gap-2 text-xs">
+                                                {Object.keys(modalCols).map((k) => (
+                                                    <label key={k} className="flex items-center gap-1">
+                                                        <input type="checkbox" checked={modalCols[k]} onChange={() => setModalCols(prev => ({ ...prev, [k]: !prev[k] }))} />
+                                                        {k}
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                    <div className="overflow-auto flex-grow">
+                                        <table className="w-full text-xs border">
+                                            <thead className="sticky top-0 bg-gray-100">
+                                                <tr>
+                                                    {Object.keys(modalCols).filter(k => modalCols[k]).map(k => (
+                                                        <th key={k} className="p-2 border text-left font-semibold">{k}</th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {modalRows.filter(r => !modalSearch || JSON.stringify(r).toLowerCase().includes(modalSearch.toLowerCase())).map((row, idx) => (
+                                                    <tr key={idx} className="hover:bg-blue-50">
+                                                        {Object.keys(modalCols).filter(k => modalCols[k]).map(k => (
+                                                            <td key={k} className="p-2 border">{String(row[k] ?? "")}</td>
+                                                        ))}
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 푸터 */}
+                    <footer className="mt-12 py-8 border-t no-print">
+                        <div className="text-center text-gray-500 text-sm">
+                            <p className="font-semibold mb-2">📊 부적합 분석 대시보드 V3.0 - 완전판</p>
+                            <p>Powered by React 16 + Recharts 1.8.5 + SheetJS + Tailwind CSS</p>
+                            <p className="mt-2 text-xs">✨ 20개 차트 | 🎨 인터랙티브 히트맵 | ⚡ 실시간 필터링 | 📥 개별 내보내기 | 🔮 예측 분석</p>
+                        </div>
+                        <div className="mt-6 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 text-xs">
+                            {[
+                                { name: "React", ver: "16", url: "https://unpkg.com/react@16", key: 'React' },
+                                { name: "ReactDOM", ver: "16", url: "https://unpkg.com/react-dom@16", key: 'ReactDOM' },
+                                { name: "XLSX", ver: "0.18.5", url: "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5", key: 'XLSX' },
+                                { name: "Recharts", ver: "1.8.5", url: "https://cdn.jsdelivr.net/npm/recharts@1.8.5", key: 'Recharts' },
+                                { name: "Babel", ver: "7.x", url: "https://unpkg.com/@babel/standalone", key: 'Babel' },
+                                { name: "Tailwind", ver: "latest", url: "https://cdn.tailwindcss.com", key: 'Tailwind' },
+                                { name: "PropTypes", ver: "15.7.2", url: "https://unpkg.com/prop-types@15.7.2", key: 'PropTypes' },
+                            ].map(lib => (
+                                <div key={lib.name} className="p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+                                    <div className="flex items-center mb-1">
+                                        <span className={`library-status ${libraryStatus[lib.key] ? 'library-loaded' : 'library-error'}`}></span>
+                                        <div className="font-semibold text-gray-800">{lib.name}</div>
+                                    </div>
+                                    <div className="text-gray-500">v{lib.ver}</div>
+                                    <a href={lib.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">CDN</a>
+                                </div>
+                            ))}
+                        </div>
+                    </footer>
+                </div>
+            );
+        };
+
+        ReactDOM.render(<DashboardV3 />, document.getElementById('root'));
+    </script>
+</body>
+</html>
